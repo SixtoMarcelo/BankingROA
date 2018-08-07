@@ -35,3 +35,7 @@ Partial Least Squares (PLS)
 Ridge Regression
 Linear Model with PCA Pre-Processing
 Linear Regression
+
+## Bank_ROAA Rmd code is Final code
+## Tunning Rmd code is for process of tunning and selection
+## The dataset is linked inside code
