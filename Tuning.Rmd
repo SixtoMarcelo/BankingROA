@@ -1,0 +1,155 @@
+---
+output:
+  word_document: default
+  html_document: default
+---
+title: "Bank ROAA"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+knitr::opts_chunk$set(echo = TRUE)
+knitr::opts_chunk$set(cache=TRUE)
+library(lattice);library(ggcorrplot);library(ggplot2);library(dplyr); library(lmtest)
+library(caret);library(GGally);library(elasticnet);library(corrplot)
+```
+
+
+#Import/load Data
+```{r}
+Data <- read.csv("https://raw.githubusercontent.com/gketem/BankingROA/master/BankMetrics.csv", stringsAsFactors = F)
+```
+
+#Cleaning/Checking
+```{r}
+delete.row.na <- function(DF, n=0) {
+  DF[1-(rowSums(is.na(DF))/ncol(DF)) >= n,]
+}
+delete.col.na <- function(DF, n=0) {
+  DF[,1-(colSums(is.na(DF))/nrow(DF)) >= n]
+}
+
+dim(Data)
+Data1 <-delete.col.na(Data,.75) 
+Data2 <-delete.row.na(Data1,.50) 
+dim(Data1)
+dim(Data2)
+nearZ <- nearZeroVar(Data2) 
+dim(nearZ)
+
+Data1 <-  delete.col.na(Data,.75) 
+Data2 <-delete.row.na(Data1,.50) 
+Data3 <- Data2[!is.na(Data2$ROAA),]
+dim(Data)
+dim(Data1)
+dim(Data2)
+dim(Data3)
+
+corrPred <- cor(Data3[,3:36],use="complete.obs")
+Data3Cor <- findCorrelation(corrPred, cutoff = 0.8,names = F)
+DataNoC <- cbind(Data3[,3:36][,-Data3Cor], Data3[,c(2,37)])
+```
+
+
+```{r}
+lmFit <- lm(DataNoC$ROAA ~ . , data=DataNoC)
+summary(lmFit)
+
+library(car)
+library(lmtest)
+
+dwtest(lmFit, data=DataNoC)
+
+
+```
+
+
+
+#Imputing/transformation
+```{r}
+impute.med <- function(x) {
+    z <- median(x, na.rm = TRUE)
+    x[is.na(x)] <- z
+    return(x)
+}
+
+DataM <- DataNoC
+for (i in c("2007Q1","2009Q1","2018Q1")){
+DataM[DataM$YearQrtr == i, ] <- lapply(DataM[DataM$YearQrtr == i, ], function(x){
+    if(is.numeric(x) & any(is.na(x))){
+            impute.med(x)
+        } else {
+            x
+        }
+    }
+)
+}
+DataM$YrQrt <- as.factor(DataM$YearQrtr)
+DataM$ROAA_Trans <- log(DataM$ROAA+100) 
+```
+
+
+## Sample Selection - Generate a Training and Test Set
+
+
+```{r echo=TRUE}
+set.seed(103190)
+DatTra <- createDataPartition(DataM$ROAA, p=0.7, list = FALSE)
+DTrain <- DataM[DatTra,]
+DTest <-  DataM[-DatTra,]
+ctrl <- trainControl(method = "repeatedcv", number = 10, repeats =10) 
+DTrainPred <- DTrain[,-c(21,22,23,24)]
+DTestPred <- DTest[,-c(21,22,23,24)]
+
+```
+
+```{r}
+marsGrid <- expand.grid(.degree = 1:3, .nprune = 2:30)
+ set.seed(3454100)
+marsTuned <- train(DTrainPred, DTrain$ROAA_Trans,
+                   method = "earth",
+                   tuneGrid = marsGrid, 
+                   preProcess = c("center", "scale" ),
+                   trControl = ctrl)
+
+```
+
+
+
+```{r}
+enetGrid <- expand.grid(.lambda = c(0, 0.01, .1), .fraction = seq(.05, 1, length = 20))
+
+enetTune <- train(DTrainPred, DTrain$ROAA_Trans, method = "enet", tuneGrid = enetGrid, trControl = ctrl, preProc = c("center", "scale"))
+
+
+plsTune1 <- train(y=DTrain$ROAA_Trans, x=DTrainPred, method = "pls", tuneLength = 15, trControl = ctrl, preProc = c("center", "scale"))
+
+lmFit <- train(y=DTrain$ROAA_Trans, x=DTrainPred,method = "lm", trControl = ctrl)
+lmPCA <- train(y=DTrain$ROAA_Trans, x=DTrainPred,method = "lm", preProcess = c("center", "scale","pca"),trControl = ctrl)
+
+svmRadial <- train(y=DTrain$ROAA_Trans, x=DTrainPred, method = "svmRadial", tuneLength = 15,preProcess = c("center", "scale","pca"),trControl = ctrl)
+
+svmLinear <- train(y=DTrain$ROAA_Trans, x=DTrainPred, method = "svmLinear", tuneLength = 15,preProcess = c("center", "scale","pca"),trControl = ctrl)
+
+ridgeGrid <- data.frame(.lambda = seq(0, .1, length = 5))
+ridgeRegFit <- train(DTrainPred, DTrain$ROAA_Trans, method = "ridge", tuneGrid = ridgeGrid, trControl = ctrl, preProc = c("center", "scale"))
+
+```
+
+
+```{r}
+resamps <- resamples(list(MARSS =marsTuned,
+                          Enet = enetTune,
+                          SvmRadial = svmRadial, 
+                          SvmLinear =svmLinear,
+                          RidgeReg=ridgeRegFit,
+                          LM = lmFit, 
+                          LmPCA = lmPCA, 
+                          PLS = plsTune1
+                          ), metric = "RMSE",interval = "confidence")
+summary(resamps)
+```
+
+
+

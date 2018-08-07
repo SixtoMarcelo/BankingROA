@@ -1,0 +1,136 @@
+---
+output:
+  word_document: default
+  pdf_document: default
+  html_document: default  
+---
+title: "Bank ROAA"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+knitr::opts_chunk$set(echo = TRUE)
+knitr::opts_chunk$set(cache=TRUE)
+library(lattice);library(ggcorrplot);library(ggplot2);library(dplyr);library(lmtest)
+library(caret);library(GGally);library(elasticnet);library(corrplot)
+```
+
+
+#Import/load Data
+```{r}
+Data <- read.csv("https://raw.githubusercontent.com/gketem/BankingROA/master/BankMetrics.csv", stringsAsFactors = F)
+```
+
+#Cleaning/Checking
+```{r}
+delete.row.na <- function(DF, n=0) {
+  DF[1-(rowSums(is.na(DF))/ncol(DF)) >= n,]
+}
+delete.col.na <- function(DF, n=0) {
+  DF[,1-(colSums(is.na(DF))/nrow(DF)) >= n]
+}
+
+dim(Data)
+Data1 <-delete.col.na(Data,.75) 
+Data2 <-delete.row.na(Data1,.50) 
+dim(Data1)
+dim(Data2)
+nearZ <- nearZeroVar(Data2) 
+dim(nearZ)
+
+Data1 <-  delete.col.na(Data,.75) 
+Data2 <-delete.row.na(Data1,.50) 
+Data3 <- Data2[!is.na(Data2$ROAA),]
+dim(Data)
+dim(Data1)
+dim(Data2)
+dim(Data3)
+
+corrPred <- cor(Data3[,3:36],use="complete.obs")
+Data3Cor <- findCorrelation(corrPred, cutoff = 0.8,names = F)
+DataNoC <- cbind(Data3[,3:36][,-Data3Cor], Data3[,c(2,37)])
+```
+
+
+#Imputing/transformation
+```{r}
+impute.med <- function(x) {
+    z <- median(x, na.rm = TRUE)
+    x[is.na(x)] <- z
+    return(x)
+}
+
+DataM <- DataNoC
+for (i in c("2007Q1","2009Q1","2018Q1")){
+DataM[DataM$YearQrtr == i, ] <- lapply(DataM[DataM$YearQrtr == i, ], function(x){
+    if(is.numeric(x) & any(is.na(x))){
+            impute.med(x)
+        } else {
+            x
+        }
+    }
+)
+}
+DataM$YrQrt <- as.factor(DataM$YearQrtr)
+DataM$ROAA_Trans <- log(DataM$ROAA+100) 
+```
+
+
+## Sample Selection - Generate a Training and Test Set
+
+
+```{r echo=TRUE}
+set.seed(103190)
+DatTra <- createDataPartition(DataM$ROAA, p=0.7, list = FALSE)
+DTrain <- DataM[DatTra,]
+DTest <-  DataM[-DatTra,]
+ctrl <- trainControl(method = "repeatedcv", number = 10, repeats =10) 
+DTrainPred <- DTrain[,-c(21,22,23,24)]
+DTestPred <- DTest[,-c(21,22,23,24)]
+```
+
+
+
+##Final Model Tune
+```{r}
+PLsTune1 <- train(y=DTrain$ROAA_Trans, x=DTrainPred, method = "pls", tuneLength = 15, trControl = ctrl, preProc = c("center", "scale"))
+PLsTune1
+```
+# Final Model Refit with All Training Data
+```{r}
+PLsFit <- train(y=DTrain$ROAA_Trans, x=DTrainPred, method = "pls", tuneLength = 5, preProc = c("center", "scale"))
+PLsFit
+
+PLSImp = varImp(PLsFit)
+plot(PLSImp,top=10)
+```
+
+```{r}
+pred = predict(PLsFit, DTestPred,ncomp = 1:5,preProc = c("center", "scale"))
+MSE_test=mean((pred-DTest$ROAA_Trans)^2)
+
+r2_test=1-MSE_test/var((DTest$ROAA_Trans));
+paste("Mean of Predicted Response of Test Data is" , round(mean(pred),2))
+paste("RMSE of Test Data is" , round(MSE_test,5))
+paste("R-Sqr of Test Data is" , round(r2_test*100,2), "%")
+
+corData <- cbind(DTest$ROAA_Trans,pred)
+colnames(corData) <- c("Actual","Predicted")
+cor.test( ~ Actual + Predicted, 
+         data=corData,
+         method = "spearman",
+         continuity = FALSE,
+         conf.level = 0.95)
+
+cor.test( ~ Actual + Predicted, 
+         data=corData,
+         method = "pearson",
+         continuity = FALSE,
+         conf.level = 0.95)
+
+
+```
+
+
+
